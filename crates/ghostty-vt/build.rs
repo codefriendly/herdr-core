@@ -10,14 +10,17 @@ fn main() {
         .join("../../vendor/ghostty")
         .canonicalize()
         .expect("vendor/ghostty missing: run `git submodule update --init --depth 1`");
-    let patches = manifest.join("../../patches/ghostty").canonicalize().unwrap();
+    // Not canonicalized: on Windows that makes a `\\?\` path git can't open.
+    let patches = manifest.join("../../patches/ghostty");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     for path in ["src", "build.zig", "build.zig.zon", "include"] {
         println!("cargo:rerun-if-changed={}", vendor.join(path).display());
     }
     println!("cargo:rerun-if-changed={}", patches.display());
     println!("cargo:rerun-if-env-changed=ZIG");
-    let src = patched_copy(&vendor, &patches, &out.join("ghostty"));
+    // Type-checking with the Zig stub needs no Ghostty sources (CI lint checks out none).
+    let src =
+        if vendor.join("build.zig").exists() { patched_copy(&vendor, &patches, &out.join("ghostty")) } else { vendor };
 
     let (target, host) = (std::env::var("TARGET").unwrap(), std::env::var("HOST").unwrap());
     let windows = target.contains("windows");
