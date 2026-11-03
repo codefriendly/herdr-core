@@ -1,0 +1,2 @@
+# Patches apply to files Ghostty keeps LF everywhere: never convert line endings.
+*.patch -text

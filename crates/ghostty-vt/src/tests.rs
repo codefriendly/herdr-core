@@ -155,7 +155,7 @@ fn repaint_uses_the_active_screen_not_stale_alternate_screen_modes() {
 #[test]
 fn program_status_reports_and_title_changes_reach_us() {
     let mut t = Terminal::new(80, 24, 1 << 20);
-    t.write(b"\x1b]7501;state=working:app=claude-code:progress=40\x1b\\");
+    t.write(b"\x1b]7501;state=working:app=claude-code:progress=40:session=s-1\x1b\\");
     t.write(b"\x1b]7501;state=blocked:kind=permission:id=a/b:msg=QXBwbHk/\x07");
     t.write(b"\x1b]7501;state=clear\x1b\\\x1b]7501;state=bogus\x1b\\");
     let reports = t.take_status_reports();
@@ -166,6 +166,8 @@ fn program_status_reports_and_title_changes_reach_us() {
         (Some("permission"), "a/b", "Apply?")
     );
     assert_eq!(reports[2].state, "clear");
+    // The body after `7501;` comes through as sent, keys we don't know included.
+    assert_eq!(reports[0].raw, b"state=working:app=claude-code:progress=40:session=s-1");
     // A program asking whether we support the protocol gets an answer.
     t.write(b"\x1b]7501;?\x1b\\");
     assert!(String::from_utf8_lossy(&t.take_responses()).starts_with("\x1b]7501;?"));

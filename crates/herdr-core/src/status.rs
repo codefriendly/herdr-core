@@ -166,6 +166,7 @@ mod tests {
             app: String::new(),
             title: String::new(),
             message: String::new(),
+            raw: Vec::new(),
         }
     }
 
@@ -228,7 +229,7 @@ mod tests {
     #[test]
     fn reports_encode_back_to_what_the_parser_reads() {
         let mut screen = ghostty_vt::Terminal::new(80, 24, 1 << 20);
-        let sent = StatusReport {
+        let mut sent = StatusReport {
             state: "blocked",
             kind: Some("permission"),
             progress: Some(40),
@@ -236,8 +237,11 @@ mod tests {
             app: "claude-code".into(),
             title: "Run tests".into(),
             message: "Apply these changes?".into(),
+            raw: Vec::new(),
         };
-        screen.write(Status::from(&sent).encode("a/b").as_bytes());
+        let encoded = Status::from(&sent).encode("a/b");
+        sent.raw = encoded.strip_prefix("\x1b]7501;").unwrap().strip_suffix("\x1b\\").unwrap().as_bytes().to_vec();
+        screen.write(encoded.as_bytes());
         assert_eq!(screen.take_status_reports(), vec![sent]);
         assert_eq!(base64(b"Apply?"), "QXBwbHk/");
         assert_eq!(base64(b"ab"), "YWI=");

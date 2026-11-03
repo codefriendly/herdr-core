@@ -176,6 +176,7 @@ mod ffi {
         pub app: Str,
         pub title: Str,
         pub message: Str,
+        pub raw: Str,
     }
 
     #[repr(C)]
@@ -280,7 +281,7 @@ const DEFAULT_BG: Rgb = [0x28, 0x2c, 0x34];
 
 pub type Rgb = [u8; 3];
 
-/// One OSC 7501 report, exactly as the program sent it (strings decoded).
+/// One OSC 7501 report, exactly as the program sent it (known strings decoded).
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusReport {
     /// idle, working, done, blocked, error, or clear (remove records).
@@ -294,6 +295,8 @@ pub struct StatusReport {
     pub app: String,
     pub title: String,
     pub message: String,
+    /// The whole body after `7501;`, as sent: unknown keys included, maybe not UTF-8.
+    pub raw: Vec<u8>,
 }
 
 /// What the terminal answers on the program's behalf, set by the core.
@@ -320,11 +323,15 @@ extern "C" fn on_write_pty(_: ffi::Terminal, ud: *mut c_void, data: *const u8, l
     hooks.responses.extend_from_slice(unsafe { std::slice::from_raw_parts(data, len) });
 }
 
-fn string(s: &ffi::Str) -> String {
+fn bytes(s: &ffi::Str) -> &[u8] {
     if s.ptr.is_null() {
-        return String::new();
+        return &[];
     }
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    unsafe { std::slice::from_raw_parts(s.ptr, s.len) }
+}
+
+fn string(s: &ffi::Str) -> String {
+    String::from_utf8_lossy(bytes(s)).into_owned()
 }
 
 extern "C" fn on_program_status(_: ffi::Terminal, ud: *mut c_void, r: *const ffi::ProgramStatus) {
@@ -339,6 +346,7 @@ extern "C" fn on_program_status(_: ffi::Terminal, ud: *mut c_void, r: *const ffi
         app: string(&r.app),
         title: string(&r.title),
         message: string(&r.message),
+        raw: bytes(&r.raw).to_vec(),
     });
 }
 

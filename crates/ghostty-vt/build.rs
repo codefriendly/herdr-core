@@ -1,19 +1,23 @@
-//! Builds libghostty-vt from the pinned Ghostty submodule with Zig.
+//! Builds libghostty-vt from the pinned Ghostty submodule with Zig, after
+//! applying our patches (`patches/ghostty`) to a copy of it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let src = manifest
+    let vendor = manifest
         .join("../../vendor/ghostty")
         .canonicalize()
         .expect("vendor/ghostty missing: run `git submodule update --init --depth 1`");
+    let patches = manifest.join("../../patches/ghostty").canonicalize().unwrap();
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     for path in ["src", "build.zig", "build.zig.zon", "include"] {
-        println!("cargo:rerun-if-changed={}", src.join(path).display());
+        println!("cargo:rerun-if-changed={}", vendor.join(path).display());
     }
+    println!("cargo:rerun-if-changed={}", patches.display());
     println!("cargo:rerun-if-env-changed=ZIG");
+    let src = patched_copy(&vendor, &patches, &out.join("ghostty"));
 
     let (target, host) = (std::env::var("TARGET").unwrap(), std::env::var("HOST").unwrap());
     let windows = target.contains("windows");
@@ -57,6 +61,52 @@ fn main() {
     std::fs::copy(out.join("zig-out/lib").join(name), lib.join(name)).unwrap();
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=static={}", if windows { "ghostty-vt-static" } else { "ghostty-vt" });
+}
+
+/// A fresh copy of the Ghostty tree with every patch applied, in name order.
+/// The submodule itself stays untouched. A patch that doesn't apply fails the
+/// build: Ghostty moved under it and it needs redoing.
+fn patched_copy(vendor: &Path, patches: &Path, dest: &Path) -> PathBuf {
+    if dest.exists() {
+        std::fs::remove_dir_all(dest).unwrap();
+    }
+    copy_tree(vendor, dest);
+    let mut list: Vec<PathBuf> = std::fs::read_dir(patches)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "patch"))
+        .collect();
+    list.sort();
+    for patch in list {
+        // The copy lies inside our own repo (target/): keep git from finding
+        // it, or it would apply relative to our root and skip Ghostty's paths.
+        let status = Command::new("git")
+            .current_dir(dest)
+            .env("GIT_CEILING_DIRECTORIES", dest.parent().unwrap())
+            .arg("apply")
+            .arg(&patch)
+            .status()
+            .unwrap_or_else(|e| panic!("cannot run git to apply Ghostty patches: {e}"));
+        assert!(status.success(), "{} no longer applies to vendor/ghostty: redo it", patch.display());
+    }
+    dest.to_path_buf()
+}
+
+/// Copies a directory tree, without git data or Zig build output.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if [".git", ".zig-cache", "zig-out"].iter().any(|skip| name == *skip) {
+            continue;
+        }
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &to.join(&name));
+        } else {
+            std::fs::copy(entry.path(), to.join(&name)).unwrap();
+        }
+    }
 }
 
 /// Cargo's target triple as Zig names it: `x86_64-unknown-linux-musl` ->
