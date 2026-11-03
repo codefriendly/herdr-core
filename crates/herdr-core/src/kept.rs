@@ -75,20 +75,34 @@ impl Core {
             .filter(|t| t.is_live() && t.keep && t.holder.is_none() && (startup || t.restart_after_ms <= now_ms()))
             .map(|t| t.id())
             .collect();
+        // One session resumed twice would fight itself: the first terminal gets it, the rest a shell.
+        let mut resumed = std::collections::HashSet::new();
         for id in ids {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let cwd = t
-                .last_cwd
-                .as_ref()
-                .filter(|p| std::path::Path::new(p).is_dir())
-                .or_else(|| std::path::Path::new(&t.cwd).is_dir().then_some(&t.cwd))
-                .cloned()
-                .unwrap_or_else(|| {
-                    env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
-                });
+            let resume = t
+                .resume
+                .as_mut()
+                .filter(|r| std::path::Path::new(&r.cwd).is_dir() && resumed.insert((r.argv.clone(), r.cwd.clone())));
+            // Its process is gone: the command stays until the resumed program reports its own.
+            let resume = resume.map(|r| {
+                r.pid = 0;
+                (crate::resume::typed(&r.argv), r.cwd.clone())
+            });
+            let cwd = match &resume {
+                Some((_, cwd)) => cwd.clone(),
+                None => t
+                    .last_cwd
+                    .as_ref()
+                    .filter(|p| std::path::Path::new(p).is_dir())
+                    .or_else(|| std::path::Path::new(&t.cwd).is_dir().then_some(&t.cwd))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
+                    }),
+            };
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
             t.holder = Some(instance);
@@ -110,6 +124,9 @@ impl Core {
             st.screens.insert(id, screen);
             // Claim and queue the snapshot before sending: a slow holder never gets a second spawn.
             // If a crash leaves the spawn unrecorded, the next start kills it.
+            if let Some((line, _)) = resume {
+                st.resume_typing.insert(id, line);
+            }
             self.save(&st);
             if let Some(link) = st.link(id) {
                 link.send(&proto::json_frame(proto::SPAWN, id, &spawn));

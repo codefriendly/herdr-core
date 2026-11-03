@@ -657,6 +657,32 @@
         ],
         "type": "object"
       },
+      "Resume": {
+        "properties": {
+          "argv": {
+            "description": "The command, as the program reported it; it starts with the program's own name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "description": "The folder the program ran in when it reported it.",
+            "type": "string"
+          },
+          "pid": {
+            "description": "The process that reported it; its exit clears the command, its loss\nkeeps it. 0 once restored, until the program reports again.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "argv",
+          "cwd",
+          "pid"
+        ],
+        "type": "object"
+      },
       "RunResult": {
         "properties": {
           "address": {
@@ -800,6 +826,17 @@
             "default": false,
             "description": "Whether the program ever sent a 7501 report.",
             "type": "boolean"
+          },
+          "resume": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resume"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The command its program reported to resume itself after a loss (OSC 7501 `resume=`)."
           },
           "rm": {
             "default": false,
@@ -1256,6 +1293,17 @@
             "default": false,
             "description": "Whether the program ever sent a 7501 report.",
             "type": "boolean"
+          },
+          "resume": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resume"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The command its program reported to resume itself after a loss (OSC 7501 `resume=`)."
           },
           "rm": {
             "default": false,

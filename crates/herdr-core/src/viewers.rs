@@ -101,7 +101,7 @@ impl Core {
 
     /// Program output: through the relay to the screen and every viewer,
     /// then whatever status or title it reported.
-    pub fn output(&self, st: &mut State, id: u32, bytes: &[u8]) {
+    pub fn output(&self, st: &mut State, id: u32, from: &str, bytes: &[u8]) {
         st.last_output.insert(id, Instant::now());
         *st.output_seq.entry(id).or_default() += 1;
         if let Some(t) = st.reg.terminals.get_mut(&id) {
@@ -123,6 +123,10 @@ impl Core {
         }
         if let Some(link) = holder {
             link.input(id, &Relay::take_responses(screen));
+            // A restored shell printed (its prompt, or what comes before): typed ahead, it reads the command.
+            if let Some(line) = st.resume_typing.remove(&id) {
+                link.input(id, line.as_bytes());
+            }
         }
         let reports = screen.take_status_reports();
         let title = screen.take_title_changed().then(|| screen.title());
@@ -173,6 +177,7 @@ impl Core {
             t.full_screen = true;
         }
         if !reports.is_empty() {
+            reports.iter().for_each(|r| self.resume_reported(st, id, from, r));
             self.report_status(st, id, &reports);
         }
         if let Some(title) = title {

@@ -138,6 +138,7 @@ Each event's `data`, and how to apply it to a snapshot:
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |
 | `size` | `{cols, rows}` | set both |
 | `foreground` | `{pid, name, argv, cwd}`, or null: what runs in it now (the foreground process group's leader) and its folder; read about twice a second | set `foreground` |
+| `resume` | `{resume}`: `{argv, cwd, pid}`, or null when cleared | set `resume`, or drop it when null |
 
 Terminals on machines this core added are in the same stream, addressed as
 seen from here (`rohan/t7`), in the same order and filters (`terminal`,
@@ -217,3 +218,17 @@ A terminal's status is whatever its program reported through OSC 7501, the
 Program Status Protocol (`idle`, `working`,
 `done`, `blocked`, `error`, ...), stored as reported. hc never infers status
 from the screen. Programs that don't speak 7501 have no status.
+
+## Resume
+
+A program can say how to resume itself after a loss, in a root record:
+`resume=` and its arguments separated by commas, any other byte as `%XX`
+(`state=idle:resume=claude,--resume,abc`; `resume=` alone clears it). hc
+keeps it only when the program in front at that moment is named like the
+command's first word (without `.exe`) and is still in front at the next
+check, and the command starts with a plain name and has no control
+characters, quotes or backslashes. It is the terminal's `resume`, saved at
+once. The program's exit and `keep --off` clear it; a loss keeps it. When a
+kept terminal is restored, the shell starts in its folder with the command
+typed, once per command and folder; it stays until the program reports again.
+Windows has no foreground program to name, so it never takes one.

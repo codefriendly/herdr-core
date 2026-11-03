@@ -293,3 +293,13 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn mirrored_records_take_and_drop_a_resume_command() {
+    let mut record = serde_json::json!({"address": "t1"});
+    let resume = serde_json::json!({"argv": ["claude", "--resume", "a"], "cwd": "/w", "pid": 7});
+    apply(&mut record, "resume", &serde_json::json!({"resume": resume}));
+    assert_eq!(record["resume"], resume);
+    apply(&mut record, "resume", &serde_json::json!({"resume": null}));
+    assert!(record.get("resume").is_none(), "absent, as a local record without one: {record}");
+}

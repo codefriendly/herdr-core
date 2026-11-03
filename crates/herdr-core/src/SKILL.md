@@ -209,6 +209,10 @@ paths start at your current folder. Prefer explicit paths for remote work.
   on Linux, systemd stops the core before its holders. Ordinary exits and
   explicit kills remain final. Streams end on loss; reattach after the
   restarted event. Pending input/attach may be unavailable: retry after recovery.
+- A program can name its own resume command (OSC 7501 `resume=cmd,arg,...`,
+  see `schema/README.md`). A kept terminal restored after a loss starts its
+  shell in that folder with the command typed. The program's exit clears it.
+  `get` shows it as `resume`.
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary

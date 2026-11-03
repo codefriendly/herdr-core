@@ -516,6 +516,8 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
         "keep" => set(record, &["keep"]),
         "size" => set(record, &["cols", "rows"]),
         "foreground" => record["foreground"] = data.clone(),
+        "resume" if data["resume"].is_null() => drop(record.as_object_mut().map(|r| r.remove("resume"))),
+        "resume" => set(record, &["resume"]),
         _ => {}
     }
 }

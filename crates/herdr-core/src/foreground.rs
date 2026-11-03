@@ -161,6 +161,9 @@ impl Core {
                 let pgid = self.foreground(id).await;
                 let now = (pgid > 0).then(|| about(pgid)).flatten();
                 let mut st = self.lock();
+                if st.reg.terminals.get(&id).is_some_and(|t| t.is_live()) {
+                    self.check_resume(&mut st, id, now.as_ref());
+                }
                 let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live() && t.foreground != now) else {
                     continue;
                 };

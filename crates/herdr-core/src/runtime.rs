@@ -54,6 +54,10 @@ pub struct State {
     pub gates: HashMap<u32, crate::input::Gate>,
     pub queues: HashMap<u32, Arc<tokio::sync::Mutex<()>>>,
     pub foreground: HashMap<u32, Vec<oneshot::Sender<i32>>>,
+    /// Resume commands reported, with the process then in front: the next foreground check decides.
+    pub resume_pending: HashMap<u32, (Vec<String>, i32)>,
+    /// Resume commands to type once the replacement shell first prints.
+    pub resume_typing: HashMap<u32, String>,
     /// Waits matching output: they get every byte viewers get.
     pub output_watch: HashMap<u32, Vec<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
     /// The turn of each caller's last send to a terminal, until a bare wait reports it.
@@ -598,7 +602,7 @@ impl Core {
         while let Some((kind, id, payload)) = proto::read(stream)? {
             let mut st = self.lock();
             match kind {
-                proto::OUTPUT => self.output(&mut st, id, &payload),
+                proto::OUTPUT => self.output(&mut st, id, instance, &payload),
                 proto::SPAWNED | proto::SPAWN_FAILED => {
                     let result = if kind == proto::SPAWNED {
                         proto::parse::<proto::Spawned>(&payload).map(|s| s.pid).map_err(|e| e.to_string())
