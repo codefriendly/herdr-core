@@ -89,30 +89,45 @@ fn a_keyed_report_counts_at_once_and_a_loss_types_it_once_per_session() {
     assert_eq!(get(&s, first)["cwd"], dir, "in its folder");
     assert_eq!(resume(&s, first)["pid"], 0, "kept until the resumed program reports again");
 
-    // A later loss of the other terminal, its record unchanged, still finds the session claimed.
-    assert_eq!(resume(&s, other)["argv"], want, "the duplicate keeps its record");
-    let old = get(&s, other)["pid"].as_i64().unwrap();
+    assert!(resume(&s, other).is_null(), "the duplicate keeps no copy: its shell can't claim the session");
+
+    // The terminal that has the session is lost again: it resumes it again, the other stays a shell.
+    let old = get(&s, first)["pid"].as_i64().unwrap();
     unsafe {
         libc::kill(old as i32, libc::SIGKILL);
     }
-    wait_until("the other one replaced", || get(&s, other)["pid"].as_i64().is_some_and(|p| p != old));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert!(!text(&s, other).contains(&typed), "not resumed in a later pass while the first runs it");
+    wait_until("resumed again in a later pass", || {
+        get(&s, first)["pid"].as_i64().is_some_and(|p| p != old) && text(&s, first).contains(&typed)
+    });
+    assert!(!text(&s, other).contains(&typed));
 
-    // The resumed program clears it with its own, fresh key.
+    // The resumed program clears it with its own, fresh key (the one killed with its shell had the old one).
     let fresh = std::fs::read_to_string(s.root.join("back-key")).unwrap();
     assert_ne!(fresh, key, "a fresh key for each program");
     touch(&s, "back-report");
     wait_until("cleared by the resumed program", || resume(&s, first).is_null());
+}
 
-    // Now the duplicate alone holds the session: its next loss, in a later pass, resumes it.
-    assert_eq!(resume(&s, other)["argv"], want);
-    let old = get(&s, other)["pid"].as_i64().unwrap();
+#[test]
+fn a_report_not_yet_bound_when_lost_binds_nothing_after_restore() {
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "2000".into()));
+    let agent = fake_agent(&mut s);
+    // Restored, it runs without reporting: it must not take over the old report.
+    let body = script(&s, &format!("set -m; fakeagent {agent} x fakeagent,{agent},later,x; exec sleep 100"));
+    let t = run(&s, &["--keep", "sh", "-c", &body]);
+    wait_until("key saved", || s.root.join("x-key").exists());
+    touch(&s, "x-report");
+    wait_until("taken", || !resume(&s, &t).is_null());
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
     unsafe {
-        libc::kill(old as i32, libc::SIGKILL);
+        libc::kill(holder as i32, libc::SIGKILL);
     }
-    wait_until("the sole owner resumes", || text(&s, other).contains(&typed));
-    assert!(s.json(&["keep", other, "--off"])["resume"].is_null(), "keep --off clears it");
+    let typed = format!("fakeagent {agent} later x");
+    wait_until_for("restored and typed", std::time::Duration::from_secs(15), || text(&s, &t).contains(&typed));
+    wait_until("the restored child in front", || get(&s, &t)["foreground"]["name"] == "fakeagent");
+    std::thread::sleep(std::time::Duration::from_millis(4500)); // two foreground checks
+    assert_eq!(resume(&s, &t)["pid"], 0, "unbound: {}", resume(&s, &t));
 }
 
 #[test]

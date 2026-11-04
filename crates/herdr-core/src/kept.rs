@@ -76,7 +76,8 @@ impl Core {
             .map(|t| t.id())
             .collect();
         // One session resumed twice would fight itself: the first terminal gets it, the rest a
-        // shell. A terminal running now (restored earlier, or never lost) has already claimed its own.
+        // shell and no copy (or that shell would claim it next time). A terminal running now
+        // (restored earlier, or never lost) has already claimed its own.
         let mut resumed: std::collections::HashSet<_> = st
             .reg
             .terminals
@@ -94,11 +95,12 @@ impl Core {
             if let Some(r) = t.resume.as_mut() {
                 r.pid = 0;
             }
-            let resume = t
-                .resume
-                .as_ref()
-                .filter(|r| std::path::Path::new(&r.cwd).is_dir() && resumed.insert((r.argv.clone(), r.cwd.clone())))
-                .map(|r| (crate::resume::typed(&r.argv), r.cwd.clone()));
+            let resume = t.resume.as_ref().filter(|r| std::path::Path::new(&r.cwd).is_dir());
+            let claimed = resume.is_some_and(|r| !resumed.insert((r.argv.clone(), r.cwd.clone())));
+            let resume = resume.filter(|_| !claimed).map(|r| (crate::resume::typed(&r.argv), r.cwd.clone()));
+            if claimed {
+                t.resume = None;
+            }
             let cwd = match &resume {
                 Some((_, cwd)) => cwd.clone(),
                 None => t
@@ -133,6 +135,11 @@ impl Core {
             st.screens.insert(id, screen);
             // Claim and queue the snapshot before sending: a slow holder never gets a second spawn.
             // If a crash leaves the spawn unrecorded, the next start kills it.
+            // A bind the lost program never had: the new shell's first child didn't send it.
+            st.resume_bind.remove(&id);
+            if claimed {
+                self.emit(&mut st, "resume", id, serde_json::json!({"resume": null}));
+            }
             if let Some((line, _)) = resume {
                 st.resume_typing.insert(id, line);
             }

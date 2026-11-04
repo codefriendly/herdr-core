@@ -97,27 +97,62 @@ pub fn typed(argv: &[String]) -> String {
     line
 }
 
-/// The longest record worth looking back for: a command at its limit, escaped.
-pub const MAX_RECORD: usize = 3 * MAX_BYTES + 512;
+/// Overwrites key values in OSC 7501 records (`key=` fields) as output streams
+/// past, with `x`: the same length, so nothing else moves. It keeps its place
+/// between calls, so a record split anywhere across reads is masked too.
+#[derive(Default)]
+pub struct Masker(Mask);
 
-/// Overwrites the key in every complete OSC 7501 record in `buf` (same length,
-/// so nothing else moves), from offset `from` on.
-pub fn mask_keys(buf: &mut [u8], from: usize) {
-    const START: &[u8] = b"\x1b]7501;";
-    let mut at = from;
-    while let Some(i) = buf.get(at..).and_then(|b| b.windows(START.len()).position(|w| w == START)) {
-        let body = at + i + START.len();
-        let Some(len) = buf[body..].iter().position(|b| *b == 0x07 || *b == 0x1b) else { return };
-        let end = body + len;
-        let mut field = body;
-        while field < end {
-            let stop = buf[field..end].iter().position(|b| *b == b':').map_or(end, |p| field + p);
-            if buf[field..stop].starts_with(b"key=") {
-                buf[field + 4..stop].fill(b'x');
-            }
-            field = stop + 1;
+#[derive(Default, Clone, Copy)]
+enum Mask {
+    #[default]
+    Outside,
+    Esc,
+    /// How much of `7501;` came after `ESC ]`.
+    Prefix(usize),
+    /// At a field's start: how much of `key=` it has matched.
+    Field(usize),
+    /// In another field.
+    Value,
+    /// In a key: overwritten.
+    Key,
+}
+
+impl Masker {
+    pub fn mask(&mut self, buf: &mut [u8]) {
+        use Mask::*;
+        for b in buf.iter_mut() {
+            let c = *b;
+            self.0 = match (self.0, c) {
+                (Outside, 0x1b) => Esc,
+                (Outside, _) => Outside,
+                (Esc, b']') => Prefix(0),
+                (Prefix(i), _) if c == b"7501;"[i] => {
+                    if i == 4 {
+                        Field(0)
+                    } else {
+                        Prefix(i + 1)
+                    }
+                }
+                // A record ends at BEL or ESC (ST, or anything that cuts it short).
+                (Field(_) | Value | Key, 0x07) => Outside,
+                (_, 0x1b) => Esc,
+                (Field(_) | Value | Key, b':') => Field(0),
+                (Field(i), _) if c == b"key="[i] => {
+                    if i == 3 {
+                        Key
+                    } else {
+                        Field(i + 1)
+                    }
+                }
+                (Field(_) | Value, _) => Value,
+                (Key, _) => {
+                    *b = b'x';
+                    Key
+                }
+                _ => Outside,
+            };
         }
-        at = end;
     }
 }
 
@@ -229,11 +264,26 @@ mod tests {
     }
 
     #[test]
-    fn keys_are_masked_in_complete_records_only() {
-        let mut buf =
-            b"a\x1b]7501;state=idle:key=s3cr3t:resume=x\x07b\x1b]7501;key=k2\x1b\\\x1b]7501;key=open".to_vec();
-        mask_keys(&mut buf, 0);
-        assert_eq!(buf, b"a\x1b]7501;state=idle:key=xxxxxx:resume=x\x07b\x1b]7501;key=xx\x1b\\\x1b]7501;key=open");
+    fn keys_are_masked_wherever_records_split() {
+        let stream: &[u8] = b"a\x1b]7501;state=idle:key=s3cr3t:resume=x\x07b\x1b]7501;key=k2\x1b\\c\x1b]0;key=title\x07\x1b]7501;app=akey=no:key=open";
+        let want: &[u8] = b"a\x1b]7501;state=idle:key=xxxxxx:resume=x\x07b\x1b]7501;key=xx\x1b\\c\x1b]0;key=title\x07\x1b]7501;app=akey=no:key=xxxx";
+        for size in [1, 2, 3, 7, 600, stream.len()] {
+            let (mut masker, mut out) = (Masker::default(), Vec::new());
+            for chunk in stream.chunks(size) {
+                let mut chunk = chunk.to_vec();
+                masker.mask(&mut chunk);
+                out.extend(chunk);
+            }
+            assert_eq!(out, want, "in reads of {size}");
+        }
+        // Longer than anything a relay or parser holds back, split in the key itself.
+        let long = format!("\x1b]7501;state=idle:message={}:resume=a:key=0123456789abcdef\x07", "m".repeat(3000));
+        let (mut masker, mut first, mut rest) =
+            (Masker::default(), long.as_bytes()[..3030].to_vec(), long.as_bytes()[3030..].to_vec());
+        masker.mask(&mut first);
+        masker.mask(&mut rest);
+        let out = String::from_utf8([first, rest].concat()).unwrap();
+        assert!(out.ends_with(":key=xxxxxxxxxxxxxxxx\x07"), "{}", &out[3000..]);
     }
 
     fn report(body: &str) -> ghostty_vt::StatusReport {

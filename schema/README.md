@@ -231,14 +231,17 @@ plus `key=` and the `HC_RESUME_KEY` from its environment
   output another program merely shows can't know it. The command must start
   with a plain name and have no control characters, quotes or backslashes.
 - **Stored** as the terminal's `resume` `{argv, cwd, pid}`, saved at once. The
-  key itself is masked (`key=xxx…`) in what viewers get and in the holder's
-  replay tail.
+  key itself is masked (`key=xxx…`) in what viewers get, in repaints and in the
+  holder's replay tail, however the record is split across reads.
 - **Bound** at the next foreground check to the program then in front (never
   the terminal's own program), with its folder. That program's exit clears the
   command, and so does `keep --off`; a loss keeps it.
 - **Restored:** the shell starts in its folder with the command typed, once
-  per command and folder, while no running terminal holds the same one. It
-  stays, with `pid: 0`, until the resumed program reports or clears its own.
+  per command and folder, while no running terminal holds the same one. A
+  terminal refused it that way gets a shell and loses its copy (a `resume`
+  event with null). It stays, with `pid: 0`, until the resumed program reports
+  or clears its own; a report that was never bound before the loss binds
+  nothing after it.
 
 Windows names no program in front of a pseudo console, so a command there is
 never bound and only `resume=` or `keep --off` clears it.

@@ -118,7 +118,7 @@ impl Core {
         let (mut out, recovered) =
             if recovering { relay.feed_to_ground(screen, bytes) } else { (relay.feed(screen, bytes), None) };
         // The screen has read it; nobody else gets a program's resume key.
-        crate::resume::mask_keys(&mut out, 0);
+        relay.masker.mask(&mut out);
         let win32_input = relay.win32_input.take();
         if let Some(watchers) = output_watch.get_mut(&id).filter(|_| !scrolling) {
             watchers.retain(|w| w.send(out.clone()).is_ok());
@@ -394,7 +394,9 @@ pub(crate) fn first_paint(st: &State, id: u32, history: usize) -> Vec<u8> {
     tests::PAINTS.with(|n| n.set(n.get() + 1));
     let screen = &st.screens[&id];
     let mut paint = paint_state(st, id, screen.paint(history));
-    if let Some(continuation) = screen.continuation() {
+    if let Some(mut continuation) = screen.continuation() {
+        // A record the screen is still reading starts here: the rest of its key goes masked by the relay.
+        crate::resume::Masker::default().mask(&mut continuation);
         paint.extend(continuation);
     }
     paint
