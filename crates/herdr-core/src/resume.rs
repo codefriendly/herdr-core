@@ -120,8 +120,8 @@ enum Mask {
 
 impl Masker {
     /// Read as Ghostty's parser reads them: CAN and SUB end any sequence, ESC
-    /// starts one, BEL ends an OSC, and inside an OSC the other C0 bytes are
-    /// dropped (so they split neither `7501;` nor `key=`).
+    /// starts one (C0 and DEL after it are ignored), BEL ends an OSC, and inside
+    /// an OSC the other C0 bytes are dropped (so they split neither `7501;` nor `key=`).
     pub fn mask(&mut self, buf: &mut [u8]) {
         use Mask::*;
         for b in buf.iter_mut() {
@@ -132,7 +132,7 @@ impl Masker {
                 (_, 0x1b) => Esc,
                 (Outside, _) => Outside,
                 (Esc, b']') => Prefix(0),
-                (Esc, 0..=0x1f) => Esc,
+                (Esc, 0..=0x1f | 0x7f) => Esc,
                 (Esc, _) => Outside,
                 (_, 0x07) if osc => Outside,
                 (state, 0..=0x1f) if osc => state,
@@ -312,6 +312,8 @@ mod tests {
         // Inside an OSC Ghostty drops these C0 bytes, so `key=` still counts with them in it.
         assert_eq!(mask(b"\x1b]75\t01;ke\ty=s3\x01c\x07"), b"\x1b]75\t01;ke\ty=xx\x01x\x07");
         assert_eq!(mask(b"\x1b]7501;state=idle:\x7fkey=s\x07"), b"\x1b]7501;state=idle:\x7fkey=s\x07", "DEL is put");
+        // Between ESC and `]` Ghostty ignores DEL, like C0.
+        assert_eq!(mask(b"\x1b\x7f]7501;key=s3\x07"), b"\x1b\x7f]7501;key=xx\x07");
         // A masker primed with a screen's unfinished record (a new core) masks the rest of its key.
         let mut primed = Masker::default();
         primed.mask(&mut b"\x1b]7501;state=idle:key=0123".to_vec());

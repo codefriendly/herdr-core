@@ -156,29 +156,46 @@ fn the_exit_of_its_program_clears_it_and_a_loss_keeps_it() {
 fn a_core_that_restarts_mid_record_still_masks_the_rest_of_its_key() {
     let mut s = Session::new();
     fake_agent(&mut s);
-    // Half a keyed record, then (after the core restarts) the rest of the key.
-    let body = script(
-        &s,
-        &format!(
-            r#"printf %s "$HC_RESUME_KEY" > {root}/key; w half; printf '\033]7501;state=idle:resume=x:key=%s' "${{HC_RESUME_KEY%????????????????}}"; w rest; printf '%s\033\\' "${{HC_RESUME_KEY#????????????????}}"; exec sleep 100"#,
-            root = s.root.display()
+    // Half a keyed record, then (after the core restarts) the rest. Once split inside the
+    // key; once before `key=`, after more ignored TABs than the screen can export as unfinished.
+    let pad = "\t".repeat(70_000);
+    for (name, first, rest) in [
+        (
+            "value",
+            r#"printf 'key=%s' "${HC_RESUME_KEY%????????????????}""#,
+            r#"printf '%s\033\\' "${HC_RESUME_KEY#????????????????}""#,
         ),
-    );
-    let t = run(&s, &["--keep", "sh", "-c", &body]);
-    wait_until("key saved", || s.root.join("key").exists());
-    let key = std::fs::read_to_string(s.root.join("key")).unwrap();
-    touch(&s, "half");
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
-    unsafe {
-        libc::kill(core as i32, libc::SIGKILL);
+        ("padded", r#"printf %s "$PAD""#, r#"printf 'key=%s\033\\' "$HC_RESUME_KEY""#),
+    ] {
+        s.env.retain(|(k, _)| k != "PAD");
+        s.env.push(("PAD".into(), pad.clone()));
+        let body = script(
+            &s,
+            &format!(
+                r#"printf %s "$HC_RESUME_KEY" > {root}/{name}-key; w {name}-half; printf '\033]7501;state=idle:resume=x:'; {first}; w {name}-rest; {rest}; exec sleep 100"#,
+                root = s.root.display()
+            ),
+        );
+        let t = run(&s, &["--keep", "sh", "-c", &body]);
+        wait_until("key saved", || s.root.join(format!("{name}-key")).exists());
+        let key = std::fs::read_to_string(s.root.join(format!("{name}-key"))).unwrap();
+        touch(&s, &format!("{name}-half"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+        unsafe {
+            libc::kill(core as i32, libc::SIGKILL);
+        }
+        wait_until("core gone", || !s.connect_ok());
+        let mut viewer = framed::Viewer::attach(&s, &t, 80, 24, json!({})); // starts a new core
+        touch(&s, &format!("{name}-rest"));
+        // The record's end, or (a viewer that attached mid-sequence the screen can't export)
+        // the repaint it gets instead once the screen is back at ground: each starts with CAN.
+        viewer.until("the record's end", |v| {
+            v.raw.windows(2).any(|w| w == b"\x1b\\") || v.raw.iter().filter(|b| **b == 0x18).count() > 1
+        });
+        let shown = String::from_utf8_lossy(&viewer.raw).to_string();
+        assert!(!shown.contains(&key[16..]) && !shown.contains(&key[..16]), "{name}: no part of the key: {shown:?}");
     }
-    wait_until("core gone", || !s.connect_ok());
-    let mut viewer = framed::Viewer::attach(&s, &t, 80, 24, json!({})); // starts a new core
-    touch(&s, "rest");
-    viewer.drain(std::time::Duration::from_millis(500));
-    let shown = String::from_utf8_lossy(&viewer.raw).to_string();
-    assert!(!shown.contains(&key[16..]) && !shown.contains(&key[..16]), "no part of the key: {shown:?}");
 }
 
 #[test]

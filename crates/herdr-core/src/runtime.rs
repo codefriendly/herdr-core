@@ -437,6 +437,14 @@ impl Core {
                 .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()));
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            // Where the screen will be in a record after the tail, whatever its size: the
+            // sequence a snapshot left unfinished, then the tail itself (masked by the holder,
+            // the same shape). The live relay's masker starts there.
+            let mut masker = crate::resume::Masker::default();
+            if let Some(mut unfinished) = screen.continuation() {
+                masker.mask(&mut unfinished);
+            }
+            masker.mask(&mut tail.clone());
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
             relay.feed(&mut screen, &tail);
@@ -470,9 +478,7 @@ impl Core {
             // Half a sequence from the old link must not prefix the new. But the screen may be
             // mid-record (a core that restarted): the new relay's masker starts where it is.
             let mut relay = Relay::default();
-            if let Some(mut unfinished) = screen.continuation() {
-                relay.masker.mask(&mut unfinished);
-            }
+            relay.masker = masker;
             st.screens.insert(id, screen);
             st.relays.insert(id, relay);
             rec.pid = Some(h.pid);
