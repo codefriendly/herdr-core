@@ -467,8 +467,14 @@ impl Core {
                     rec.status_ms = since;
                 }
             }
+            // Half a sequence from the old link must not prefix the new. But the screen may be
+            // mid-record (a core that restarted): the new relay's masker starts where it is.
+            let mut relay = Relay::default();
+            if let Some(mut unfinished) = screen.continuation() {
+                relay.masker.mask(&mut unfinished);
+            }
             st.screens.insert(id, screen);
-            st.relays.remove(&id); // half a sequence from the old link must not prefix the new
+            st.relays.insert(id, relay);
             rec.pid = Some(h.pid);
             rec.cols = h.cols;
             rec.rows = h.rows;

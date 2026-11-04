@@ -95,10 +95,14 @@ impl Core {
             if let Some(r) = t.resume.as_mut() {
                 r.pid = 0;
             }
-            let resume = t.resume.as_ref().filter(|r| std::path::Path::new(&r.cwd).is_dir());
-            let claimed = resume.is_some_and(|r| !resumed.insert((r.argv.clone(), r.cwd.clone())));
-            let resume = resume.filter(|_| !claimed).map(|r| (crate::resume::typed(&r.argv), r.cwd.clone()));
-            if claimed {
+            // Refused (another terminal claimed it) or unusable (its folder is gone): a shell, and
+            // no copy left to claim the session later.
+            let usable = t.resume.as_ref().filter(|r| std::path::Path::new(&r.cwd).is_dir());
+            let resume = usable
+                .filter(|r| resumed.insert((r.argv.clone(), r.cwd.clone())))
+                .map(|r| (crate::resume::typed(&r.argv), r.cwd.clone()));
+            let dropped = t.resume.is_some() && resume.is_none();
+            if dropped {
                 t.resume = None;
             }
             let cwd = match &resume {
@@ -136,8 +140,10 @@ impl Core {
             // Claim and queue the snapshot before sending: a slow holder never gets a second spawn.
             // If a crash leaves the spawn unrecorded, the next start kills it.
             // A bind the lost program never had: the new shell's first child didn't send it.
+            // A line queued for an earlier attempt (whose spawn failed) is this pass's to decide.
             st.resume_bind.remove(&id);
-            if claimed {
+            st.resume_typing.remove(&id);
+            if dropped {
                 self.emit(&mut st, "resume", id, serde_json::json!({"resume": null}));
             }
             if let Some((line, _)) = resume {

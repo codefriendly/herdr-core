@@ -238,8 +238,8 @@ plus `key=` and the `HC_RESUME_KEY` from its environment
   command, and so does `keep --off`; a loss keeps it.
 - **Restored:** the shell starts in its folder with the command typed, once
   per command and folder, while no running terminal holds the same one. A
-  terminal refused it that way gets a shell and loses its copy (a `resume`
-  event with null). It stays, with `pid: 0`, until the resumed program reports
+  terminal refused it that way, or whose command's folder is gone, gets a
+  shell and loses its copy (a `resume` event with null). It stays, with `pid: 0`, until the resumed program reports
   or clears its own; a report that was never bound before the loss binds
   nothing after it.
 

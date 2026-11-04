@@ -120,6 +120,7 @@ fn a_report_not_yet_bound_when_lost_binds_nothing_after_restore() {
     touch(&s, "x-report");
     wait_until("taken", || !resume(&s, &t).is_null());
     let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+    assert_eq!(resume(&s, &t)["pid"], 0, "not bound yet");
     unsafe {
         libc::kill(holder as i32, libc::SIGKILL);
     }
@@ -149,4 +150,59 @@ fn the_exit_of_its_program_clears_it_and_a_loss_keeps_it() {
     assert!(cleared["params"]["data"]["resume"].is_null());
     assert!(resume(&s, &t).is_null());
     assert_eq!(get(&s, &t)["state"], "live");
+}
+
+#[test]
+fn a_core_that_restarts_mid_record_still_masks_the_rest_of_its_key() {
+    let mut s = Session::new();
+    fake_agent(&mut s);
+    // Half a keyed record, then (after the core restarts) the rest of the key.
+    let body = script(
+        &s,
+        &format!(
+            r#"printf %s "$HC_RESUME_KEY" > {root}/key; w half; printf '\033]7501;state=idle:resume=x:key=%s' "${{HC_RESUME_KEY%????????????????}}"; w rest; printf '%s\033\\' "${{HC_RESUME_KEY#????????????????}}"; exec sleep 100"#,
+            root = s.root.display()
+        ),
+    );
+    let t = run(&s, &["--keep", "sh", "-c", &body]);
+    wait_until("key saved", || s.root.join("key").exists());
+    let key = std::fs::read_to_string(s.root.join("key")).unwrap();
+    touch(&s, "half");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    unsafe {
+        libc::kill(core as i32, libc::SIGKILL);
+    }
+    wait_until("core gone", || !s.connect_ok());
+    let mut viewer = framed::Viewer::attach(&s, &t, 80, 24, json!({})); // starts a new core
+    touch(&s, "rest");
+    viewer.drain(std::time::Duration::from_millis(500));
+    let shown = String::from_utf8_lossy(&viewer.raw).to_string();
+    assert!(!shown.contains(&key[16..]) && !shown.contains(&key[..16]), "no part of the key: {shown:?}");
+}
+
+#[test]
+fn a_command_whose_folder_is_gone_is_dropped_on_restore() {
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "30".into()));
+    let agent = fake_agent(&mut s);
+    let dir = s.root.join("gone");
+    std::fs::create_dir(&dir).unwrap();
+    let body =
+        script(&s, &format!("set -m; cd {}; fakeagent {agent} x fakeagent,--s,1; exec sleep 100", dir.display()));
+    let t = run(&s, &["--keep", "sh", "-c", &body]);
+    touch(&s, "x-report");
+    wait_until("bound", || resume(&s, &t)["pid"].as_i64() > Some(0));
+    let status = s.json(&["server", "status"]);
+    unsafe {
+        libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+    }
+    wait_until("core gone", || !s.connect_ok());
+    std::fs::remove_dir_all(&dir).unwrap();
+    let old = status["holder"]["pid"].as_i64();
+    wait_until("restored", || {
+        get(&s, &t)["pid"].as_i64().is_some_and(|p| Some(p) != old) && get(&s, &t)["state"] == "live"
+    });
+    wait_until("dropped: it can't claim the session later", || resume(&s, &t).is_null());
 }

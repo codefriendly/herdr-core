@@ -119,14 +119,23 @@ enum Mask {
 }
 
 impl Masker {
+    /// Read as Ghostty's parser reads them: CAN and SUB end any sequence, ESC
+    /// starts one, BEL ends an OSC, and inside an OSC the other C0 bytes are
+    /// dropped (so they split neither `7501;` nor `key=`).
     pub fn mask(&mut self, buf: &mut [u8]) {
         use Mask::*;
         for b in buf.iter_mut() {
             let c = *b;
+            let osc = matches!(self.0, Prefix(_) | Field(_) | Value | Key);
             self.0 = match (self.0, c) {
-                (Outside, 0x1b) => Esc,
+                (_, 0x18 | 0x1a) => Outside,
+                (_, 0x1b) => Esc,
                 (Outside, _) => Outside,
                 (Esc, b']') => Prefix(0),
+                (Esc, 0..=0x1f) => Esc,
+                (Esc, _) => Outside,
+                (_, 0x07) if osc => Outside,
+                (state, 0..=0x1f) if osc => state,
                 (Prefix(i), _) if c == b"7501;"[i] => {
                     if i == 4 {
                         Field(0)
@@ -134,9 +143,7 @@ impl Masker {
                         Prefix(i + 1)
                     }
                 }
-                // A record ends at BEL or ESC (ST, or anything that cuts it short).
-                (Field(_) | Value | Key, 0x07) => Outside,
-                (_, 0x1b) => Esc,
+                (Prefix(_), _) => Outside,
                 (Field(_) | Value | Key, b':') => Field(0),
                 (Field(i), _) if c == b"key="[i] => {
                     if i == 3 {
@@ -150,7 +157,6 @@ impl Masker {
                     *b = b'x';
                     Key
                 }
-                _ => Outside,
             };
         }
     }
@@ -284,6 +290,39 @@ mod tests {
         masker.mask(&mut rest);
         let out = String::from_utf8([first, rest].concat()).unwrap();
         assert!(out.ends_with(":key=xxxxxxxxxxxxxxxx\x07"), "{}", &out[3000..]);
+    }
+
+    #[test]
+    fn the_masker_reads_records_as_ghostty_does() {
+        let mask = |bytes: &[u8]| {
+            let mut out = bytes.to_vec();
+            Masker::default().mask(&mut out);
+            out
+        };
+        // CAN and SUB end any sequence, wherever in it: what follows is text, never overwritten.
+        assert_eq!(mask(b"\x1b]7501;key=ab\x18text:x"), b"\x1b]7501;key=xx\x18text:x");
+        assert_eq!(mask(b"\x1b]7501;key=ab\x1atext"), b"\x1b]7501;key=xx\x1atext");
+        for cut in [&b"\x1b]75"[..], b"\x1b]7501;", b"\x1b]7501;ke", b"\x1b]7501;state=id"] {
+            for cancel in [0x18, 0x1a] {
+                let stream = [cut, &[cancel], b"key=text:more\x07"].concat();
+                assert_eq!(mask(&stream), stream, "after {cut:?} and {cancel:#x}");
+            }
+        }
+        assert_eq!(mask(b"\x1b]7501;state=\tidle:app=a\x07"), b"\x1b]7501;state=\tidle:app=a\x07");
+        // Inside an OSC Ghostty drops these C0 bytes, so `key=` still counts with them in it.
+        assert_eq!(mask(b"\x1b]75\t01;ke\ty=s3\x01c\x07"), b"\x1b]75\t01;ke\ty=xx\x01x\x07");
+        assert_eq!(mask(b"\x1b]7501;state=idle:\x7fkey=s\x07"), b"\x1b]7501;state=idle:\x7fkey=s\x07", "DEL is put");
+        // A masker primed with a screen's unfinished record (a new core) masks the rest of its key.
+        let mut primed = Masker::default();
+        primed.mask(&mut b"\x1b]7501;state=idle:key=0123".to_vec());
+        let mut rest = b"4567\x07after".to_vec();
+        primed.mask(&mut rest);
+        assert_eq!(rest, b"xxxx\x07after");
+        let mut primed = Masker::default();
+        primed.mask(&mut b"\x1b]7501;state=idle:".to_vec());
+        let mut rest = b"key=0123\x07".to_vec();
+        primed.mask(&mut rest);
+        assert_eq!(rest, b"key=xxxx\x07", "split just before key=");
     }
 
     fn report(body: &str) -> ghostty_vt::StatusReport {
