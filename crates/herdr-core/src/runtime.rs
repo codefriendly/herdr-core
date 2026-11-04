@@ -54,8 +54,8 @@ pub struct State {
     pub gates: HashMap<u32, crate::input::Gate>,
     pub queues: HashMap<u32, Arc<tokio::sync::Mutex<()>>>,
     pub foreground: HashMap<u32, Vec<oneshot::Sender<i32>>>,
-    /// Resume commands reported, with the process then in front: the next foreground check decides.
-    pub resume_pending: HashMap<u32, (Vec<String>, i32)>,
+    /// Terminals whose new resume command the next foreground check binds to the program in front.
+    pub resume_bind: std::collections::HashSet<u32>,
     /// Resume commands to type once the replacement shell first prints.
     pub resume_typing: HashMap<u32, String>,
     /// Waits matching output: they get every byte viewers get.

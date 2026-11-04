@@ -110,6 +110,9 @@ pub struct Terminal {
     /// The `HC_SCOPE` token everything it started carries, to end them all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// The `HC_RESUME_KEY` its program got: only a report carrying it may set `resume`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_key: Option<String>,
     #[serde(default)]
     pub seen_ms: Option<u64>,
     /// The template that started it.
@@ -299,6 +302,7 @@ impl Registry {
                 paste_gap_ms: new.template.as_ref().and_then(|t| t.paste_gap_ms),
                 foreground: None,
                 resume: None,
+                resume_key: None,
                 afar: Default::default(),
                 template: new.template.map(|t| t.name),
                 holder: None,
@@ -406,6 +410,7 @@ const PRIVATE: &[&str] = &[
     "seen_ms",
     "told_parent",
     "scope",
+    "resume_key",
     "holder",
     "printed",
     "full_screen",

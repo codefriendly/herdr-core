@@ -1,11 +1,12 @@
-#![cfg(unix)] // Windows has no foreground program to name: a pseudo console's is its shell.
+#![cfg(unix)] // Clearing on exit needs the program in front, which a pseudo console doesn't name.
 mod common;
 use common::*;
 use serde_json::{Value, json};
 
-/// A program named `fakeagent` (a copy of bash) running `agent.sh <name> <resume>`:
-/// it waits for `<name>-report`, reports `resume=<resume>`, then waits for `<name>-quit`.
-fn fake_agent(s: &Session) -> String {
+/// `fakeagent` (a copy of bash) on PATH, and `agent.sh <name> <resume>` for it:
+/// it saves its key to `<name>-key`, waits for `<name>-report`, reports
+/// `resume=<resume>` with its key, then waits for `<name>-quit`.
+fn fake_agent(s: &mut Session) -> String {
     let bin = s.root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::copy(
@@ -13,9 +14,15 @@ fn fake_agent(s: &Session) -> String {
         bin.join("fakeagent"),
     )
     .unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    s.env.push(("PATH".into(), path));
     let script = s.root.join("agent.sh");
-    std::fs::write(&script, common::script(s, r#"w "$1-report"; r "state=idle:resume=$2"; w "$1-quit""#)).unwrap();
-    format!("{} {}", bin.join("fakeagent").display(), script.display())
+    let body = format!(
+        r#"printf %s "$HC_RESUME_KEY" > {}/"$1-key"; w "$1-report"; r "state=idle:resume=$2:key=$HC_RESUME_KEY"; w "$1-quit""#,
+        s.root.display()
+    );
+    std::fs::write(&script, common::script(s, &body)).unwrap();
+    script.display().to_string()
 }
 
 fn resume(s: &Session, t: &str) -> Value {
@@ -23,42 +30,50 @@ fn resume(s: &Session, t: &str) -> Value {
 }
 
 #[test]
-fn the_program_in_front_sets_its_resume_command_and_a_loss_types_it_once() {
+fn a_keyed_report_counts_at_once_and_a_loss_types_it_once_per_session() {
     let mut s = Session::new();
-    s.env.push(("HC_FOREGROUND_MS".into(), "30".into()));
-    let agent = fake_agent(&s);
+    // Checks far apart: a report counts before any check has seen its program.
+    s.env.push(("HC_FOREGROUND_MS".into(), "700".into()));
+    let agent = fake_agent(&mut s);
     let dir = s.root.join("work");
     std::fs::create_dir(&dir).unwrap();
     let dir = std::fs::canonicalize(&dir).unwrap().display().to_string();
+    // What another program shows can't carry the key: with none, or a wrong one, it never counts.
     let evil = s.root.join("evil");
-    std::fs::write(&evil, "\x1b]7501;state=idle:resume=fakeagent,--evil\x1b\\").unwrap();
-    // Output shown by another program never counts, even with the named one in front right after.
+    std::fs::write(&evil, "\x1b]7501;state=idle:resume=sh,-c,boom\x1b\\\x1b]7501;state=idle:resume=sh,x:key=0\x07")
+        .unwrap();
+    // On restore it reports again: a clear, with the key of the restored program.
+    let command = format!("fakeagent,{agent},back,");
     let start = |name: &str| {
+        // Under a shell with job control, as in a pane: the agent is not the terminal's own program.
         let body = script(
             &s,
-            &format!("cd {dir}; w go; cat {}; exec {agent} {name} fakeagent,--session,a%20b", evil.display()),
+            &format!("set -m; cd {dir}; cat {}; fakeagent {agent} {name} {command}; exec sleep 100", evil.display()),
         );
         run(&s, &["--keep", "sh", "-c", &body])
     };
     let (t1, t2) = (start("one"), start("two"));
-    touch(&s, "go");
-    for t in [&t1, &t2] {
-        wait_until("the agent in front", || get(&s, t)["foreground"]["name"] == "fakeagent");
-    }
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(resume(&s, &t1).is_null(), "{}", resume(&s, &t1));
-
+    let mut viewer = framed::Viewer::attach(&s, &t1, 80, 24, json!({}));
+    wait_until("keys saved", || s.root.join("one-key").exists() && s.root.join("two-key").exists());
     touch(&s, "one-report");
     touch(&s, "two-report");
-    let want = json!(["fakeagent", "--session", "a b"]);
+    let want = json!(["fakeagent", agent, "back", ""]);
     for t in [&t1, &t2] {
         wait_until("resume set", || resume(&s, t)["argv"] == want);
-        let r = get(&s, t);
-        assert_eq!(r["resume"]["cwd"], dir);
-        assert_eq!(r["resume"]["pid"], r["foreground"]["pid"]);
     }
+    for t in [&t1, &t2] {
+        wait_until("bound to the agent", || {
+            let r = get(&s, t);
+            r["resume"]["pid"].as_i64() > Some(0) && r["resume"]["pid"] == r["foreground"]["pid"]
+        });
+        assert_eq!(resume(&s, t)["cwd"], dir);
+    }
+    let key = std::fs::read_to_string(s.root.join("one-key")).unwrap();
+    viewer.drain(std::time::Duration::from_millis(200));
+    let shown = String::from_utf8_lossy(&viewer.raw).to_string();
+    assert!(shown.contains("resume=fakeagent") && !shown.contains(&key), "the key never reaches viewers: {shown:?}");
     let state = std::fs::read_to_string(s.root.join("state/herdr-core/test/terminals.json")).unwrap();
-    assert!(state.contains("a b"), "on disk at once: {state}");
+    assert!(state.contains("back"), "on disk at once: {state}");
 
     let status = s.json(&["server", "status"]);
     unsafe {
@@ -66,46 +81,49 @@ fn the_program_in_front_sets_its_resume_command_and_a_loss_types_it_once() {
         libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
     }
     wait_until("core gone", || !s.connect_ok());
-    let typed = "fakeagent --session 'a b'";
-    wait_until("one terminal resumes", || [&t1, &t2].iter().any(|t| text(&s, t).contains(typed)));
+    let typed = format!("fakeagent {agent} back ''");
+    wait_until("one terminal resumes", || [&t1, &t2].iter().any(|t| text(&s, t).contains(&typed)));
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let resumed: Vec<_> = [&t1, &t2].into_iter().filter(|t| text(&s, t).contains(typed)).collect();
-    assert_eq!(resumed.len(), 1, "the same session resumes once");
-    let r = get(&s, resumed[0]);
-    assert_eq!(r["cwd"], dir, "in its folder");
-    assert_eq!(r["resume"]["argv"], want, "kept until the resumed program reports again");
-    assert_eq!(r["resume"]["pid"], 0);
+    let (first, other) = if text(&s, &t1).contains(&typed) { (&t1, &t2) } else { (&t2, &t1) };
+    assert!(!text(&s, other).contains(&typed), "the same session resumes once");
+    assert_eq!(get(&s, first)["cwd"], dir, "in its folder");
+    assert_eq!(resume(&s, first)["pid"], 0, "kept until the resumed program reports again");
 
-    assert!(s.json(&["keep", resumed[0], "--off"])["resume"].is_null(), "keep --off clears it");
-    assert!(resume(&s, resumed[0]).is_null());
+    // A later loss of the other terminal, its record unchanged, still finds the session claimed.
+    assert_eq!(resume(&s, other)["argv"], want, "the duplicate keeps its record");
+    let old = get(&s, other)["pid"].as_i64().unwrap();
+    unsafe {
+        libc::kill(old as i32, libc::SIGKILL);
+    }
+    wait_until("the other one replaced", || get(&s, other)["pid"].as_i64().is_some_and(|p| p != old));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!text(&s, other).contains(&typed), "not resumed in a later pass while the first runs it");
+
+    // The resumed program clears it with its own, fresh key.
+    let fresh = std::fs::read_to_string(s.root.join("back-key")).unwrap();
+    assert_ne!(fresh, key, "a fresh key for each program");
+    touch(&s, "back-report");
+    wait_until("cleared by the resumed program", || resume(&s, first).is_null());
+    assert!(s.json(&["keep", other, "--off"])["resume"].is_null(), "keep --off clears it");
 }
 
 #[test]
-fn only_a_command_naming_the_program_counts_and_its_exit_clears_it() {
+fn the_exit_of_its_program_clears_it_and_a_loss_keeps_it() {
     let mut s = Session::new();
     s.env.push(("HC_FOREGROUND_MS".into(), "30".into()));
-    let agent = fake_agent(&s);
-    let body =
-        script(&s, &format!("set -m; w go; {agent} m other,--x; {agent} x fakeagent,--session,1; exec sleep 100"));
+    let agent = fake_agent(&mut s);
+    let body = script(&s, &format!("set -m; fakeagent {agent} x fakeagent,--session,1; exec sleep 100"));
     let t = run(&s, &["--keep", "sh", "-c", &body]);
     let mut events = s.connect();
     events.call(1, "events.subscribe", json!({"terminal": t}));
-    touch(&s, "go");
-    wait_until("the agent in front", || get(&s, &t)["foreground"]["name"] == "fakeagent");
-    touch(&s, "m-report");
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(resume(&s, &t).is_null(), "another program's command: {}", resume(&s, &t));
-    touch(&s, "m-quit");
-
-    let pid = |s: &Session| get(s, &t)["foreground"]["pid"].clone();
-    let first = pid(&s);
-    wait_until("the next agent in front", || pid(&s) != first && get(&s, &t)["foreground"]["name"] == "fakeagent");
     touch(&s, "x-report");
     let set = next_event(&mut events, |e| e["params"]["type"] == "resume");
     assert_eq!(set["params"]["data"]["resume"]["argv"], json!(["fakeagent", "--session", "1"]));
+    wait_until("bound", || resume(&s, &t)["pid"].as_i64() > Some(0));
     touch(&s, "x-quit");
-    let cleared = next_event(&mut events, |e| e["params"]["type"] == "resume");
-    assert!(cleared["params"]["data"]["resume"].is_null(), "{cleared}");
+    let cleared =
+        next_event(&mut events, |e| e["params"]["type"] == "resume" && e["params"]["data"]["resume"].is_null());
+    assert!(cleared["params"]["data"]["resume"].is_null());
     assert!(resume(&s, &t).is_null());
     assert_eq!(get(&s, &t)["state"], "live");
 }

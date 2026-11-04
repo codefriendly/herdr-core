@@ -75,22 +75,30 @@ impl Core {
             .filter(|t| t.is_live() && t.keep && t.holder.is_none() && (startup || t.restart_after_ms <= now_ms()))
             .map(|t| t.id())
             .collect();
-        // One session resumed twice would fight itself: the first terminal gets it, the rest a shell.
-        let mut resumed = std::collections::HashSet::new();
+        // One session resumed twice would fight itself: the first terminal gets it, the rest a
+        // shell. A terminal running now (restored earlier, or never lost) has already claimed its own.
+        let mut resumed: std::collections::HashSet<_> = st
+            .reg
+            .terminals
+            .values()
+            .filter(|t| t.is_live() && t.holder.is_some())
+            .filter_map(|t| t.resume.as_ref().map(|r| (r.argv.clone(), r.cwd.clone())))
+            .collect();
         for id in ids {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
+            // Its process is gone (its pid may be anyone's now): the command stays, owned by
+            // nobody, until the resumed program reports or clears its own.
+            if let Some(r) = t.resume.as_mut() {
+                r.pid = 0;
+            }
             let resume = t
                 .resume
-                .as_mut()
-                .filter(|r| std::path::Path::new(&r.cwd).is_dir() && resumed.insert((r.argv.clone(), r.cwd.clone())));
-            // Its process is gone: the command stays until the resumed program reports its own.
-            let resume = resume.map(|r| {
-                r.pid = 0;
-                (crate::resume::typed(&r.argv), r.cwd.clone())
-            });
+                .as_ref()
+                .filter(|r| std::path::Path::new(&r.cwd).is_dir() && resumed.insert((r.argv.clone(), r.cwd.clone())))
+                .map(|r| (crate::resume::typed(&r.argv), r.cwd.clone()));
             let cwd = match &resume {
                 Some((_, cwd)) => cwd.clone(),
                 None => t
@@ -103,8 +111,9 @@ impl Core {
                         env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
                     }),
             };
-            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
+            let (env, scope, key) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
+            t.resume_key = Some(key);
             t.holder = Some(instance);
             t.argv = shell.clone();
             t.cwd = cwd.clone();

@@ -660,18 +660,18 @@
       "Resume": {
         "properties": {
           "argv": {
-            "description": "The command, as the program reported it; it starts with the program's own name.",
+            "description": "The command, as the program reported it.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "cwd": {
-            "description": "The folder the program ran in when it reported it.",
+            "description": "The folder of the program in front when it was bound (or the terminal's last known one).",
             "type": "string"
           },
           "pid": {
-            "description": "The process that reported it; its exit clears the command, its loss\nkeeps it. 0 once restored, until the program reports again.",
+            "description": "The program in front at the first foreground check after the report (never the\nterminal's own shell); its exit clears the command, its loss keeps it. 0 until then,\nand after a restore until the resumed program reports again.",
             "format": "int32",
             "type": "integer"
           }

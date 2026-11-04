@@ -222,13 +222,23 @@ from the screen. Programs that don't speak 7501 have no status.
 ## Resume
 
 A program can say how to resume itself after a loss, in a root record:
-`resume=` and its arguments separated by commas, any other byte as `%XX`
-(`state=idle:resume=claude,--resume,abc`; `resume=` alone clears it). hc
-keeps it only when the program in front at that moment is named like the
-command's first word (without `.exe`) and is still in front at the next
-check, and the command starts with a plain name and has no control
-characters, quotes or backslashes. It is the terminal's `resume`, saved at
-once. The program's exit and `keep --off` clear it; a loss keeps it. When a
-kept terminal is restored, the shell starts in its folder with the command
-typed, once per command and folder; it stays until the program reports again.
-Windows has no foreground program to name, so it never takes one.
+`resume=` and its arguments separated by commas, any other byte as `%XX`,
+plus `key=` and the `HC_RESUME_KEY` from its environment
+(`state=idle:resume=claude,--resume,abc:key=…`; `resume=` alone clears it).
+
+- **Accepted** at once, but only with that key. Each program gets a fresh key,
+  at start and at each restore, and what it starts (its hooks) inherits it;
+  output another program merely shows can't know it. The command must start
+  with a plain name and have no control characters, quotes or backslashes.
+- **Stored** as the terminal's `resume` `{argv, cwd, pid}`, saved at once. The
+  key itself is masked (`key=xxx…`) in what viewers get and in the holder's
+  replay tail.
+- **Bound** at the next foreground check to the program then in front (never
+  the terminal's own program), with its folder. That program's exit clears the
+  command, and so does `keep --off`; a loss keeps it.
+- **Restored:** the shell starts in its folder with the command typed, once
+  per command and folder, while no running terminal holds the same one. It
+  stays, with `pid: 0`, until the resumed program reports or clears its own.
+
+Windows names no program in front of a pseudo console, so a command there is
+never bound and only `resume=` or `keep --off` clears it.

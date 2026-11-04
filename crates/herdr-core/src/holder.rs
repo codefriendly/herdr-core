@@ -397,6 +397,11 @@ impl Holder {
             t.tail.extend(&buf[..n]);
             let excess = t.tail.len().saturating_sub(TAIL_BYTES);
             t.tail.drain(..excess);
+            // Kept for a core that crashed: no resume key in it. A record split across
+            // reads is masked once it is whole; looking back that far finds its start.
+            let tail = t.tail.make_contiguous();
+            let from = tail.len().saturating_sub(n + crate::resume::MAX_RECORD);
+            crate::resume::mask_keys(tail, from);
             self.to_core(&mut st, &proto::frame(proto::OUTPUT, id, &buf[..n]));
             // A core that falls behind slows its programs, as a PTY nobody reads would.
             let Some(backlog) = st.core.as_ref().map(|c| c.backlog.clone()).filter(|b| b.over(BACKLOG_BYTES)) else {

@@ -115,8 +115,10 @@ impl Core {
         let Some(screen) = screens.get_mut(&id) else { return };
         let relay = relays.entry(id).or_default();
         let recovering = viewers.get(&id).into_iter().flatten().any(|v| v.recovering);
-        let (out, recovered) =
+        let (mut out, recovered) =
             if recovering { relay.feed_to_ground(screen, bytes) } else { (relay.feed(screen, bytes), None) };
+        // The screen has read it; nobody else gets a program's resume key.
+        crate::resume::mask_keys(&mut out, 0);
         let win32_input = relay.win32_input.take();
         if let Some(watchers) = output_watch.get_mut(&id).filter(|_| !scrolling) {
             watchers.retain(|w| w.send(out.clone()).is_ok());
