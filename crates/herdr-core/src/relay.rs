@@ -22,6 +22,8 @@ pub struct Relay {
     /// The program's latest win32-input-mode request (DEC 9001, ConPTY's ask
     /// for key events), until taken. The screen doesn't keep it.
     pub win32_input: Option<bool>,
+    /// Masks resume keys in what viewers get, across reads.
+    pub masker: crate::resume::Masker,
 }
 
 enum Seq {

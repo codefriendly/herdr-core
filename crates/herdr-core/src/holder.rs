@@ -25,6 +25,8 @@ struct Term {
     cols: u16,
     rows: u16,
     tail: VecDeque<u8>,
+    /// Masks resume keys in the tail, across reads.
+    masker: crate::resume::Masker,
     exit: Option<Exit>,
     reader_done: bool,
     /// Since when its output could drain; None while its reader waits for a
@@ -366,6 +368,7 @@ impl Holder {
                         cols: spec.cols,
                         rows: spec.rows,
                         tail: VecDeque::new(),
+                        masker: Default::default(),
                         exit: None,
                         reader_done: false,
                         drains_since: Some(Instant::now()),
@@ -394,7 +397,10 @@ impl Holder {
             };
             let mut st = self.lock();
             let Some(t) = st.terms.get_mut(&id) else { break };
-            t.tail.extend(&buf[..n]);
+            // Kept for a core that crashed: no resume key in it, even mid-record. The core gets it whole.
+            let mut kept = buf[..n].to_vec();
+            t.masker.mask(&mut kept);
+            t.tail.extend(&kept);
             let excess = t.tail.len().saturating_sub(TAIL_BYTES);
             t.tail.drain(..excess);
             self.to_core(&mut st, &proto::frame(proto::OUTPUT, id, &buf[..n]));

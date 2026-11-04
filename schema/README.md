@@ -138,6 +138,7 @@ Each event's `data`, and how to apply it to a snapshot:
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |
 | `size` | `{cols, rows}` | set both |
 | `foreground` | `{pid, name, argv, cwd}`, or null: what runs in it now (the foreground process group's leader) and its folder; read about twice a second | set `foreground` |
+| `resume` | `{resume}`: `{argv, cwd, pid}`, or null when cleared | set `resume`, or drop it when null |
 
 Terminals on machines this core added are in the same stream, addressed as
 seen from here (`rohan/t7`), in the same order and filters (`terminal`,
@@ -217,3 +218,30 @@ A terminal's status is whatever its program reported through OSC 7501, the
 Program Status Protocol (`idle`, `working`,
 `done`, `blocked`, `error`, ...), stored as reported. hc never infers status
 from the screen. Programs that don't speak 7501 have no status.
+
+## Resume
+
+A program can say how to resume itself after a loss, in a root record:
+`resume=` and its arguments separated by commas, any other byte as `%XX`,
+plus `key=` and the `HC_RESUME_KEY` from its environment
+(`state=idle:resume=claude,--resume,abc:key=…`; `resume=` alone clears it).
+
+- **Accepted** at once, but only with that key. Each program gets a fresh key,
+  at start and at each restore, and what it starts (its hooks) inherits it;
+  output another program merely shows can't know it. The command must start
+  with a plain name and have no control characters, quotes or backslashes.
+- **Stored** as the terminal's `resume` `{argv, cwd, pid}`, saved at once. The
+  key itself is masked (`key=xxx…`) in what viewers get, in repaints and in the
+  holder's replay tail, however the record is split across reads.
+- **Bound** at the next foreground check to the program then in front (never
+  the terminal's own program), with its folder. That program's exit clears the
+  command, and so does `keep --off`; a loss keeps it.
+- **Restored:** the shell starts in its folder with the command typed, once
+  per command and folder, while no running terminal holds the same one. A
+  terminal refused it that way, or whose command's folder is gone, gets a
+  shell and loses its copy (a `resume` event with null). It stays, with `pid: 0`, until the resumed program reports
+  or clears its own; a report that was never bound before the loss binds
+  nothing after it.
+
+Windows names no program in front of a pseudo console, so a command there is
+never bound and only `resume=` or `keep --off` clears it.

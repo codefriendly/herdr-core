@@ -54,6 +54,10 @@ pub struct State {
     pub gates: HashMap<u32, crate::input::Gate>,
     pub queues: HashMap<u32, Arc<tokio::sync::Mutex<()>>>,
     pub foreground: HashMap<u32, Vec<oneshot::Sender<i32>>>,
+    /// Terminals whose new resume command the next foreground check binds to the program in front.
+    pub resume_bind: std::collections::HashSet<u32>,
+    /// Resume commands to type once the replacement shell first prints.
+    pub resume_typing: HashMap<u32, String>,
     /// Waits matching output: they get every byte viewers get.
     pub output_watch: HashMap<u32, Vec<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
     /// The turn of each caller's last send to a terminal, until a bare wait reports it.
@@ -433,6 +437,14 @@ impl Core {
                 .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()));
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            // Where the screen will be in a record after the tail, whatever its size: the
+            // sequence a snapshot left unfinished, then the tail itself (masked by the holder,
+            // the same shape). The live relay's masker starts there.
+            let mut masker = crate::resume::Masker::default();
+            if let Some(mut unfinished) = screen.continuation() {
+                masker.mask(&mut unfinished);
+            }
+            masker.mask(&mut tail.clone());
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
             relay.feed(&mut screen, &tail);
@@ -463,8 +475,12 @@ impl Core {
                     rec.status_ms = since;
                 }
             }
+            // Half a sequence from the old link must not prefix the new. But the screen may be
+            // mid-record (a core that restarted): the new relay's masker starts where it is.
+            let mut relay = Relay::default();
+            relay.masker = masker;
             st.screens.insert(id, screen);
-            st.relays.remove(&id); // half a sequence from the old link must not prefix the new
+            st.relays.insert(id, relay);
             rec.pid = Some(h.pid);
             rec.cols = h.cols;
             rec.rows = h.rows;
@@ -598,7 +614,7 @@ impl Core {
         while let Some((kind, id, payload)) = proto::read(stream)? {
             let mut st = self.lock();
             match kind {
-                proto::OUTPUT => self.output(&mut st, id, &payload),
+                proto::OUTPUT => self.output(&mut st, id, instance, &payload),
                 proto::SPAWNED | proto::SPAWN_FAILED => {
                     let result = if kind == proto::SPAWNED {
                         proto::parse::<proto::Spawned>(&payload).map(|s| s.pid).map_err(|e| e.to_string())

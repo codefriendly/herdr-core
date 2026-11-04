@@ -101,7 +101,7 @@ impl Core {
 
     /// Program output: through the relay to the screen and every viewer,
     /// then whatever status or title it reported.
-    pub fn output(&self, st: &mut State, id: u32, bytes: &[u8]) {
+    pub fn output(&self, st: &mut State, id: u32, from: &str, bytes: &[u8]) {
         st.last_output.insert(id, Instant::now());
         *st.output_seq.entry(id).or_default() += 1;
         if let Some(t) = st.reg.terminals.get_mut(&id) {
@@ -115,14 +115,20 @@ impl Core {
         let Some(screen) = screens.get_mut(&id) else { return };
         let relay = relays.entry(id).or_default();
         let recovering = viewers.get(&id).into_iter().flatten().any(|v| v.recovering);
-        let (out, recovered) =
+        let (mut out, recovered) =
             if recovering { relay.feed_to_ground(screen, bytes) } else { (relay.feed(screen, bytes), None) };
+        // The screen has read it; nobody else gets a program's resume key.
+        relay.masker.mask(&mut out);
         let win32_input = relay.win32_input.take();
         if let Some(watchers) = output_watch.get_mut(&id).filter(|_| !scrolling) {
             watchers.retain(|w| w.send(out.clone()).is_ok());
         }
         if let Some(link) = holder {
             link.input(id, &Relay::take_responses(screen));
+            // A restored shell printed (its prompt, or what comes before): typed ahead, it reads the command.
+            if let Some(line) = st.resume_typing.remove(&id) {
+                link.input(id, line.as_bytes());
+            }
         }
         let reports = screen.take_status_reports();
         let title = screen.take_title_changed().then(|| screen.title());
@@ -173,6 +179,7 @@ impl Core {
             t.full_screen = true;
         }
         if !reports.is_empty() {
+            reports.iter().for_each(|r| self.resume_reported(st, id, from, r));
             self.report_status(st, id, &reports);
         }
         if let Some(title) = title {
@@ -387,7 +394,9 @@ pub(crate) fn first_paint(st: &State, id: u32, history: usize) -> Vec<u8> {
     tests::PAINTS.with(|n| n.set(n.get() + 1));
     let screen = &st.screens[&id];
     let mut paint = paint_state(st, id, screen.paint(history));
-    if let Some(continuation) = screen.continuation() {
+    if let Some(mut continuation) = screen.continuation() {
+        // A record the screen is still reading starts here: the rest of its key goes masked by the relay.
+        crate::resume::Masker::default().mask(&mut continuation);
         paint.extend(continuation);
     }
     paint

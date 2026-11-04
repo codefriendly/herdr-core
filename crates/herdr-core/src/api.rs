@@ -321,9 +321,13 @@ async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError>
             return Err(RpcError::invalid_params("only live terminals can be kept"));
         }
         t.keep = p.keep;
-        let public = Public(t.clone());
         let lost = (!p.keep && t.holder.is_none()).then(|| t.reason.clone().unwrap_or_else(|| "holder_lost".into()));
         core.emit(&mut st, "keep", id, json!({"keep": p.keep}));
+        if !p.keep {
+            // Also what was still waiting: a binding, or a command not yet typed.
+            core.set_resume(&mut st, id, None);
+        }
+        let public = Public(st.reg.terminals[&id].clone());
         if let Some(reason) = lost {
             core.record_finish(&mut st, id, proto::Exit { code: None, signal: None }, &reason);
             core.changed.notify_waiters();

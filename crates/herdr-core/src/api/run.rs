@@ -156,8 +156,9 @@ pub(super) async fn start(
         let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
         screen.set_xtversion(&identity);
         st.screens.insert(id, screen);
-        let (env, scope) = terminal_env(core, id, &cwd, env);
+        let (env, scope, key) = terminal_env(core, id, &cwd, env);
         st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);
+        st.reg.terminals.get_mut(&id).expect("just created").resume_key = Some(key);
         let (tx, rx) = tokio::sync::oneshot::channel();
         st.pending.insert(id, tx);
         st.reg.terminals.get_mut(&id).expect("just created").restart_env = p.env;
@@ -204,14 +205,17 @@ pub(crate) fn terminal_env(
     id: u32,
     cwd: &str,
     mut env: BTreeMap<String, String>,
-) -> (BTreeMap<String, String>, String) {
+) -> (BTreeMap<String, String>, String, String) {
     env.insert("HC_TERMINAL_ID".into(), crate::terminals::address(id));
     env.insert("HC_TERMINAL_SOCKET".into(), core.paths.socket.display().to_string());
     let scope = crate::sweep::token();
     env.insert(crate::sweep::VAR.into(), scope.clone());
+    // Fresh for each program: a report carrying it came from this program or what it started.
+    let key = crate::platform::random_hex();
+    env.insert(crate::resume::KEY_VAR.into(), key.clone());
     // Preserve the requested spelling, including symlinks.
     env.insert("PWD".into(), cwd.into());
-    (env, scope)
+    (env, scope, key)
 }
 
 /// The core's environment minus whoever started the core's identity, plus the
@@ -221,7 +225,8 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
         .into_iter()
         .filter(|(k, _)| {
             !IDENTITY_VARS.contains(&k.as_str())
-                && !["HC_TERMINAL_ID", crate::sweep::VAR, crate::sweep::RUNTIME].contains(&k.as_str())
+                && !["HC_TERMINAL_ID", crate::sweep::VAR, crate::sweep::RUNTIME, crate::resume::KEY_VAR]
+                    .contains(&k.as_str())
         })
         .collect();
     crate::platform::merge_env(&mut env, extra);

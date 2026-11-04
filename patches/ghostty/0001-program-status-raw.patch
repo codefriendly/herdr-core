@@ -1,0 +1,103 @@
+From f99e07d58f48204bafe854a73cffa16929bcb99f Mon Sep 17 00:00:00 2001
+From: Jonathan Liebig <jonathan.liebig@gmail.com>
+Date: Thu, 29 Oct 2026 20:08:38 +0100
+Subject: [PATCH] feat: expose raw program status reports through c api
+
+---
+ include/ghostty/vt/terminal.h |  8 ++++++--
+ src/terminal/c/terminal.zig   | 14 ++++++++++++--
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+index 482b9700e5b..6f3307bea0c 100644
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -1260,8 +1260,7 @@ typedef enum GHOSTTY_ENUM_TYPED {
+  * you want to keep.
+  *
+  * This is a sized struct. Later versions may add fields at the end, and
+- * `size` tells you which fields are present. Every field below has been
+- * present since this struct was introduced.
++ * `size` tells you which fields are present.
+  *
+  * @ingroup terminal
+  */
+@@ -1311,6 +1310,11 @@ typedef struct {
+    * waiting for, or has finished. You may shorten it to fit, but don't
+    * try to read meaning into it. */
+   GhosttyString message;
++
++  /** The complete validated report body after `7501;`, excluding the
++   * terminator. Preserves unknown keys and encoded text as received.
++   * Only valid during the callback; copy it to retain it. */
++  GhosttyString raw;
+ } GhosttyTerminalProgramStatus;
+ 
+ /**
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 06cab9b24a9..bf0f1e2a5b7 100644
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -221,6 +221,7 @@ pub const ProgramStatus = extern struct {
+     app: lib.String,
+     title: lib.String,
+     message: lib.String,
++    raw: lib.String,
+ };
+ 
+ /// C: GhosttySemanticPromptKind
+@@ -759,6 +760,7 @@ const Effects = struct {
+             .app = .init(report.readOption(.app) orelse ""),
+             .title = .init(title.buffered()),
+             .message = .init(message.buffered()),
++            .raw = .init(report.data),
+         };
+         func(@ptrCast(wrapper), wrapper.effects.userdata, &c_report);
+     }
+@@ -5242,6 +5244,8 @@ test "set program_status callback" {
+         var last_title_len: usize = 0;
+         var last_message: [64]u8 = undefined;
+         var last_message_len: usize = 0;
++        var last_raw: [256]u8 = undefined;
++        var last_raw_len: usize = 0;
+         var written: [128]u8 = undefined;
+         var written_len: usize = 0;
+ 
+@@ -5260,6 +5264,8 @@ test "set program_status callback" {
+             last_app_len = copy(&last_app, report.app);
+             last_title_len = copy(&last_title, report.title);
+             last_message_len = copy(&last_message, report.message);
++            // The parser owns raw, so retain a copy during the callback.
++            last_raw_len = copy(&last_raw, report.raw);
+         }
+ 
+         fn writePty(
+@@ -5306,8 +5312,10 @@ test "set program_status callback" {
+     try testing.expectEqual(@as(usize, 0), S.count);
+ 
+     // "Plan" and "Apply?"
+-    const report = "\x1B]7501;state=blocked:kind=permission:progress=40:id=a/b" ++
+-        ":app=terraform:title=UGxhbg==:msg=QXBwbHk/\x07";
++    const body = "state=blocked:kind=permission:progress=40:id=a/b" ++
++        ":app=terraform:title=UGxhbg==:msg=QXBwbHk/" ++
++        ":session=09e330b8-f887-49aa-9b86-202e0c099f5f";
++    const report = "\x1B]7501;" ++ body ++ "\x07";
+     vt_write(t, report, report.len);
+     try testing.expectEqual(@as(usize, 1), S.count);
+     try testing.expectEqual(@as(?*anyopaque, @ptrCast(&sentinel)), S.last_userdata);
+@@ -5319,6 +5327,7 @@ test "set program_status callback" {
+     try testing.expectEqualStrings("terraform", S.last_app[0..S.last_app_len]);
+     try testing.expectEqualStrings("Plan", S.last_title[0..S.last_title_len]);
+     try testing.expectEqualStrings("Apply?", S.last_message[0..S.last_message_len]);
++    try testing.expectEqualStrings(body, S.last_raw[0..S.last_raw_len]);
+ 
+     // Absent values are empty, none, or -1.
+     const minimal = "\x1B]7501;state=done\x1B\\";
+@@ -5331,6 +5340,7 @@ test "set program_status callback" {
+     try testing.expectEqual(@as(usize, 0), S.last_app_len);
+     try testing.expectEqual(@as(usize, 0), S.last_title_len);
+     try testing.expectEqual(@as(usize, 0), S.last_message_len);
++    try testing.expectEqualStrings("state=done", S.last_raw[0..S.last_raw_len]);
+ 
+     // Unsetting the callback ignores reports and the query again.
+     try testing.expectEqual(Result.success, set(t, .program_status, null));

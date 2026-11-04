@@ -75,22 +75,51 @@ impl Core {
             .filter(|t| t.is_live() && t.keep && t.holder.is_none() && (startup || t.restart_after_ms <= now_ms()))
             .map(|t| t.id())
             .collect();
+        // One session resumed twice would fight itself: the first terminal gets it, the rest a
+        // shell and no copy (or that shell would claim it next time). A terminal running now
+        // (restored earlier, or never lost) has already claimed its own.
+        let mut resumed: std::collections::HashSet<_> = st
+            .reg
+            .terminals
+            .values()
+            .filter(|t| t.is_live() && t.holder.is_some())
+            .filter_map(|t| t.resume.as_ref().map(|r| (r.argv.clone(), r.cwd.clone())))
+            .collect();
         for id in ids {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let cwd = t
-                .last_cwd
-                .as_ref()
-                .filter(|p| std::path::Path::new(p).is_dir())
-                .or_else(|| std::path::Path::new(&t.cwd).is_dir().then_some(&t.cwd))
-                .cloned()
-                .unwrap_or_else(|| {
-                    env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
-                });
-            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
+            // Its process is gone (its pid may be anyone's now): the command stays, owned by
+            // nobody, until the resumed program reports or clears its own.
+            if let Some(r) = t.resume.as_mut() {
+                r.pid = 0;
+            }
+            // Refused (another terminal claimed it) or unusable (its folder is gone): a shell, and
+            // no copy left to claim the session later.
+            let usable = t.resume.as_ref().filter(|r| std::path::Path::new(&r.cwd).is_dir());
+            let resume = usable
+                .filter(|r| resumed.insert((r.argv.clone(), r.cwd.clone())))
+                .map(|r| (crate::resume::typed(&r.argv), r.cwd.clone()));
+            let dropped = t.resume.is_some() && resume.is_none();
+            if dropped {
+                t.resume = None;
+            }
+            let cwd = match &resume {
+                Some((_, cwd)) => cwd.clone(),
+                None => t
+                    .last_cwd
+                    .as_ref()
+                    .filter(|p| std::path::Path::new(p).is_dir())
+                    .or_else(|| std::path::Path::new(&t.cwd).is_dir().then_some(&t.cwd))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
+                    }),
+            };
+            let (env, scope, key) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
+            t.resume_key = Some(key);
             t.holder = Some(instance);
             t.argv = shell.clone();
             t.cwd = cwd.clone();
@@ -110,6 +139,16 @@ impl Core {
             st.screens.insert(id, screen);
             // Claim and queue the snapshot before sending: a slow holder never gets a second spawn.
             // If a crash leaves the spawn unrecorded, the next start kills it.
+            // A bind the lost program never had: the new shell's first child didn't send it.
+            // A line queued for an earlier attempt (whose spawn failed) is this pass's to decide.
+            st.resume_bind.remove(&id);
+            st.resume_typing.remove(&id);
+            if dropped {
+                self.emit(&mut st, "resume", id, serde_json::json!({"resume": null}));
+            }
+            if let Some((line, _)) = resume {
+                st.resume_typing.insert(id, line);
+            }
             self.save(&st);
             if let Some(link) = st.link(id) {
                 link.send(&proto::json_frame(proto::SPAWN, id, &spawn));
