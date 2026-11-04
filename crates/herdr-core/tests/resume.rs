@@ -104,6 +104,14 @@ fn a_keyed_report_counts_at_once_and_a_loss_types_it_once_per_session() {
     assert_ne!(fresh, key, "a fresh key for each program");
     touch(&s, "back-report");
     wait_until("cleared by the resumed program", || resume(&s, first).is_null());
+
+    // Now the duplicate alone holds the session: its next loss, in a later pass, resumes it.
+    assert_eq!(resume(&s, other)["argv"], want);
+    let old = get(&s, other)["pid"].as_i64().unwrap();
+    unsafe {
+        libc::kill(old as i32, libc::SIGKILL);
+    }
+    wait_until("the sole owner resumes", || text(&s, other).contains(&typed));
     assert!(s.json(&["keep", other, "--off"])["resume"].is_null(), "keep --off clears it");
 }
 
